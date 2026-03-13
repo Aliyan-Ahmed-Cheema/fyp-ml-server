@@ -4,25 +4,29 @@ import joblib
 import pandas as pd
 from flask import Flask, request, jsonify
 from supabase import create_client, Client
+from dotenv import load_dotenv
+
+# 1. Load secret keys from .env file
+load_dotenv()
 
 app = Flask(__name__)
 
-# 1. Load the trained Random Forest model
+# 2. Load the trained ML model
 try:
     model = joblib.load('glucose_model.pkl')
-    print("Model loaded successfully!")
+    print("✅ Model loaded successfully!")
 except Exception as e:
-    print(f"Error loading model: {e}")
+    print(f"❌ Error loading model: {e}")
 
-# 2. Connect to Supabase
-# We use environment variables so your keys stay secret on Render!
+# 3. Connect to Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 if SUPABASE_URL and SUPABASE_KEY:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Connected to Supabase!")
 else:
-    print("WARNING: Supabase credentials missing! Set them in Render environment variables.")
+    print("❌ ERROR: Supabase credentials missing! Check your .env file.")
 
 @app.route('/predict', methods=['POST'])
 def predict_glucose():
@@ -38,7 +42,7 @@ def predict_glucose():
         response = supabase.table('profiles').select('age, gender, height, weight').eq('id', patient_id).execute()
         
         if not response.data:
-            return jsonify({"error": "Patient not found in database or missing demographic data"}), 404
+            return jsonify({"error": "Patient not found or missing demographic data"}), 404
             
         patient_info = response.data[0]
 
@@ -64,8 +68,6 @@ def predict_glucose():
         pulse_area = data.get('Pulse_Area', 0)
 
         # 5. Prepare Data for the Model
-        # Notice we are mapping the lowercase db columns (patient_info['gender']) 
-        # to the uppercase model features ('Gender')
         features = pd.DataFrame([{
             'PPG_Signal': ppg_signal,
             'Heart_Rate': heart_rate,
@@ -78,13 +80,28 @@ def predict_glucose():
             'Weight': patient_info['weight']
         }])
         
-        # 6. Make Prediction
-        predicted_glucose = model.predict(features)[0]
+        # 6. Make Initial Prediction
+        raw_predicted_glucose = model.predict(features)[0]
 
-        # 7. SAVE TO SUPABASE (This updates the React website instantly!)
+        # 6.5 Apply Motion Calibration (The FYP Algorithm!)
+        # Exercise artificially inflates HR and PPG signals. We apply a discount 
+        # multiplier to normalize the glucose prediction back to a resting baseline.
+        if motion_state == "Walking":
+            # Reduce prediction by 5% to account for mild heart rate elevation
+            predicted_glucose = raw_predicted_glucose * 0.95 
+        elif motion_state == "Running":
+            # Reduce prediction by 15% to account for heavy heart rate elevation
+            predicted_glucose = raw_predicted_glucose * 0.85
+        else:
+            # Resting / Standing requires no calibration
+            predicted_glucose = raw_predicted_glucose
+
+        # 7. SAVE TO SUPABASE
+       # 7. SAVE TO SUPABASE (Updates the React website instantly!)
         supabase.table('glucose_readings').insert({
             "patient_id": patient_id,
-            "mg_dl": float(predicted_glucose)
+            "glucose_level": float(predicted_glucose),
+            "motion_state": motion_state
         }).execute()
 
         # 8. Send Response back to ESP32
@@ -92,7 +109,6 @@ def predict_glucose():
             "status": "success",
             "patient_id": patient_id,
             "motion_detected": motion_state,
-            "acceleration_g": round(magnitude, 2),
             "predicted_glucose_mg_dl": round(predicted_glucose, 1)
         }), 200
 
@@ -100,4 +116,5 @@ def predict_glucose():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # Running on 0.0.0.0 exposes the server to your laptop's hotspot network
+    app.run(host='0.0.0.0', port=5000, debug=True)
