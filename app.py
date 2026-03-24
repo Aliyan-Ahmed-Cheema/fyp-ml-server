@@ -96,12 +96,15 @@ def predict_glucose():
             # Resting / Standing requires no calibration
             predicted_glucose = raw_predicted_glucose
 
-        # 7. SAVE TO SUPABASE
-       # 7. SAVE TO SUPABASE (Updates the React website instantly!)
+       # Grab the heart rate from the incoming ESP32 payload
+        hr_value = data.get('Heart_Rate', 0)
+
+        # 7. SAVE TO SUPABASE (Updates the React website instantly!)
         supabase.table('glucose_readings').insert({
             "patient_id": patient_id,
             "glucose_level": float(predicted_glucose),
-            "motion_state": motion_state
+            "motion_state": motion_state,
+            "heart_rate": int(hr_value)  # <--- Added this line!
         }).execute()
 
         # 8. Send Response back to ESP32
